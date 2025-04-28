@@ -1,11 +1,19 @@
 #include "httpd.h"
 #include "http_config.h"
+#include "apr_strings.h"
+#include "apr_lib.h"
 
 #include <jansson.h>
 
 #include "config.h"
 
 #define DEFAULT_MAX_FORM_SIZE 10000
+
+static apr_status_t cleanup_json(void *arg)
+{
+    json_decref(arg);
+    return APR_SUCCESS;
+}
 
 void *create_dir_configuration(apr_pool_t *p, char *dir)
 {
@@ -15,6 +23,7 @@ void *create_dir_configuration(apr_pool_t *p, char *dir)
     c->query_string = apr_hash_make(p);
     c->form_fields = apr_hash_make(p);
     c->custom = json_object();
+    apr_pool_cleanup_register(p, NULL, cleanup_json, apr_pool_cleanup_null);
 
     c->max_form_size = DEFAULT_MAX_FORM_SIZE;
     c->auth_needed = 1;
@@ -76,37 +85,36 @@ static const char *set_custom_json(cmd_parms *cmd, void *cfg, const char *key, c
     return NULL;
 }
 
-static const char *set_grant_decision(cmd_parms *cmd, void *cfg, const char *decision)
+static const char *set_grant_decision(cmd_parms *cmd, void *cfg, const char *arg)
 {
-    struct config *c = cfg;
-    json_error_t error;
-    c->opa_decision_grant = json_loads(decision, 0, &error);
-    if (c->opa_decision_grant == NULL) {
-        char *copy = strdup(error.text);
-        return copy;
+    char *decision = apr_pstrdup(cmd->pool, arg);
+    char *next;
+    int count = 0;
+    char **path = apr_palloc(cmd->pool, strlen(decision) * sizeof(char *));
+
+    for (char *token = apr_strtok(decision, "/", &next); token != NULL; token = apr_strtok(NULL, "/", &next)) {
+        for (int i = 0; token[i] != '\0'; i++) {
+            if (apr_isspace(token[i])) {
+                return "Invalid OpaDecision path";
+            }
+        }
+        path[count] = token;
+        count++;
     }
+    path[count] = NULL;
+
+    struct config *c = cfg;
+    c->opa_decision_grant = path;
+
     return NULL;
 }
 
-static const char *read_decision_file(cmd_parms *cmd, void *cfg, const char *filepath)
-{
-    json_error_t error;
-    struct config *c = cfg;
-    c->opa_decision_grant = json_load_file(filepath, 0, &error);
-    if (c->opa_decision_grant == NULL) {
-        char *copy = strdup(error.text);
-        return copy;
-    }
-    return NULL;
-}
-
+/* The list of available directives with descriptions of their arguments. The OpaServerURL, OpaDecision and OpaAuthNeeded can only be declared outside containers. Everything else can be present in server config files, containers and even in .htaccess files (if AllowOverride AuthConfig has been set) */
 const command_rec directives[] = {
     AP_INIT_TAKE1("OpaServerURL", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, opa_url),
               RSRC_CONF, "url representing Opa server"),
     AP_INIT_TAKE1("OpaDecision", set_grant_decision, NULL,
-              RSRC_CONF, "json string representing granted authorization"),
-    AP_INIT_TAKE1("OpaDecisionFile", read_decision_file, NULL,
-              RSRC_CONF, "json file representing granted authorization"),
+              RSRC_CONF, "path of keys to a key with boolean value in response (keys are separated by / characters)"),
     AP_INIT_FLAG("OpaAuthNeeded", ap_set_flag_slot, (void *) APR_OFFSETOF(struct config, auth_needed),
               RSRC_CONF, "flag dictating whether user should be prompted to authenticate (on by default)"),
 
@@ -147,7 +155,7 @@ const command_rec directives[] = {
     AP_INIT_TAKE1("OpaRequestIP", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, ip_key_name),
               RSRC_CONF | OR_AUTHCFG, "name of the key for request ip"),
     AP_INIT_TAKE1("OpaRequestHttpVersion", ap_set_string_slot,(void *) APR_OFFSETOF(struct config,version_key_name),
-              RSRC_CONF | OR_AUTHCFG, "name of the http version"),
+              RSRC_CONF | OR_AUTHCFG, "name of the key for the http version"),
     AP_INIT_TAKE1("OpaRequestURL", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, url_key_name),
               RSRC_CONF | OR_AUTHCFG, "name of the key for the url"),    
     AP_INIT_TAKE1("OpaRequestMethod", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, method_key_name),

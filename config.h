@@ -5,7 +5,7 @@
 struct config
 {
     char *opa_url;
-    json_t *opa_decision_grant;
+    char **opa_decision_grant;
     int auth_needed;
 
     char *ip_key_name;
