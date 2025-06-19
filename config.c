@@ -160,7 +160,7 @@ const command_rec directives[] = {
               RSRC_CONF | OR_AUTHCFG, "name of the key for the url"),    
     AP_INIT_TAKE1("OpaRequestMethod", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, method_key_name),
               RSRC_CONF | OR_AUTHCFG, "name of the key for the method"),
-    AP_INIT_TAKE1("OpaRequestAuth", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, method_key_name),
+    AP_INIT_TAKE1("OpaRequestAuth", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, auth_key_name),
               RSRC_CONF | OR_AUTHCFG, "name of the key for the authenticated user"),
     { NULL }
 };
