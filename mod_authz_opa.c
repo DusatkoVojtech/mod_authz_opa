@@ -4,6 +4,9 @@
 #include "mod_auth.h"
 #include "util_script.h"
 #include "http_log.h"
+#include "http_ssl.h"
+#include "apr_strings.h"
+#include "apr_lib.h"
 
 #include <curl/curl.h>
 #include <jansson.h>
@@ -105,12 +108,7 @@ static char *perform_opa_request(request_rec *r, const struct config *c, char *j
 static json_t *encode_claims(const apr_array_header_t *extracted_claims, apr_hash_t *configured_claims,
               int send_all, char *array_name)
 {
-    json_t *object = json_object();
-    json_t *array = NULL;
-    /* Optionally placing the data into an JSON array */
-    if (array_name != NULL) {
-        array = json_array();
-    }
+    json_t *fields = json_object();
 
     apr_table_entry_t *h = (apr_table_entry_t *) extracted_claims->elts;
     for (int i = 0; i < extracted_claims->nelts; i++) {
@@ -122,20 +120,27 @@ static json_t *encode_claims(const apr_array_header_t *extracted_claims, apr_has
         if (key != NULL) {
             // empty string counts as a null value
             json_t *val = (h[i].val != NULL && *(h[i].val) != '\0') ? json_string(h[i].val) : json_null();
-            if (array_name == NULL) {
-                json_object_set_new(object, key, val);
 
+            json_t *prev_val = json_object_get(fields, key);
+            if (prev_val == NULL) {
+                json_object_set_new(fields, key, val);
+            } else if (json_is_array(prev_val)) {
+                json_array_append_new(prev_val, val);
             } else {
-                json_t *claim = json_object();
-                json_object_set_new(claim, key, val);
-                json_array_append_new(array, claim);
+                json_t *value_array = json_array();
+                json_array_append_new(value_array, prev_val);
+                json_array_append_new(value_array, val);
+                json_object_set_new(fields, key, value_array);
             }
         }
     }
 
-    if (array != NULL) {
-        json_object_set_new(object, array_name, array);
+    if (json_object_size(fields) == 0) {
+        json_decref(fields);
+        return NULL;
     }
+    json_t *object = json_object();
+    json_object_set_new(object, array_name, fields);
     return object;
 }
 
@@ -143,15 +148,43 @@ static json_t *encode_claims(const apr_array_header_t *extracted_claims, apr_has
 static json_t *encode_headers(request_rec *r, const struct config *cfg)
 {
     const apr_array_header_t *headers = apr_table_elts(r->headers_in);
-    return encode_claims(headers, cfg->headers, cfg->send_all_headers, cfg->header_array_name);
+    return encode_claims(headers, cfg->headers, cfg->send_all_headers, cfg->headers_array_name);
 }
 
 static json_t *encode_query_string(request_rec *r, const struct config *cfg)
 {
-    apr_table_t *query_string;
-    ap_args_to_table(r, &query_string);
-    const apr_array_header_t *query_args = apr_table_elts(query_string);
-    return encode_claims(query_args, cfg->query_string, cfg->send_all_queries, cfg->query_string_array_name);
+    if (!cfg->parse_query_string || r->args == NULL) {
+        return NULL;
+    }
+    char *query_string = apr_pstrdup(r->pool, r->args);
+    char *next;
+    apr_table_t *query_args = apr_table_make(r->pool, 8);
+
+    for (char *param = apr_strtok(query_string, "&", &next); param != NULL; param = apr_strtok(NULL, "&", &next)) {
+        char *value = param;
+        for (int i = 0; param[i] != '\0'; i++) {
+            if (apr_isspace(param[i]) || !apr_isascii(param[i])) {
+                return NULL;
+            }
+            if (param[i] == '=') {
+                if (value != param) {
+                    return NULL;
+                }
+                param[i] = '\0';
+                value = param + i + 1;
+                if (*value == '\0') {
+                    value = NULL;
+                }
+            }
+        }
+        if (value == param) {
+            return NULL;
+        }
+        apr_table_add(query_args, param, value);
+    }
+
+    return encode_claims(apr_table_elts(query_args), cfg->query_parameters,
+            apr_hash_count(cfg->query_parameters) == 0, cfg->query_string_array_name);
 }
 
 static json_t *encode_form_fields(request_rec *r, const struct config *cfg)
@@ -181,7 +214,50 @@ static json_t *encode_form_fields(request_rec *r, const struct config *cfg)
     }
 
     return encode_claims(apr_table_elts(new_table), cfg->form_fields,
-                 cfg->send_all_form_fields, cfg->form_field_array_name);
+                 cfg->send_all_form_fields, cfg->form_data_array_name);
+}
+
+static json_t *encode_env_variables(request_rec *r, const struct config *cfg)
+{
+    ap_add_common_vars(r);
+    ap_add_cgi_vars(r);
+    apr_table_t *vars_table = apr_table_copy(r->pool, r->subprocess_env);
+
+    for (int i = 0; SSL_VARS[i] != NULL; i++) {
+        const char *value = ap_ssl_var_lookup(r->pool, r->server, r->connection, r, SSL_VARS[i]);
+        if (value != NULL) {
+            apr_table_set(vars_table, SSL_VARS[i], value);
+        }
+    }
+
+    const apr_array_header_t *variables = apr_table_elts(vars_table);
+    const apr_array_header_t *prefixes = apr_table_elts(cfg->env_prefixes);
+
+    json_t *fields = json_object();
+
+    for (int i = 0; i < prefixes->nelts; i++) {
+        for (int j = 0; j < variables->nelts; j++) {
+            const apr_table_entry_t *var = (apr_table_entry_t *) variables->elts;
+            const apr_table_entry_t *prefix = (apr_table_entry_t *) prefixes->elts;
+            if (strncmp(var[j].key, prefix[i].key, strlen(prefix[i].key)) == 0) {
+                json_object_set_new(fields, var[j].key, json_string(var[j].val));
+            }
+        }
+    }
+
+    json_t *sent_variables = encode_claims(variables, cfg->env_vars, cfg->send_all_vars, cfg->vars_array_name);
+    if (json_object_size(fields) != 0) {
+        if (sent_variables == NULL) {
+            sent_variables = json_object();
+            json_object_set_new(sent_variables, cfg->vars_array_name, json_object());
+        }
+        json_t *set_envs = json_object_get(sent_variables, cfg->vars_array_name);
+        json_object_update_new(set_envs, fields);
+    } else {
+        json_decref(fields);
+    }
+
+    return sent_variables;
 }
 
 static char *build_json(request_rec *r, const struct config *c)
@@ -197,19 +273,26 @@ static char *build_json(request_rec *r, const struct config *c)
     if (c->url_key_name) {
         json_object_set_new(request_info, c->url_key_name, json_string(r->uri));
     }
+    if (c->filepath_key_name) {
+        json_object_set_new(request_info, c->filepath_key_name, json_string(r->filename));
+    }
     if (c->version_key_name) {
         json_object_set_new(request_info, c->version_key_name, json_string(r->protocol));
     }
     if (c->auth_key_name) {
         json_object_set_new(request_info, c->auth_key_name, json_string(r->user));
     }
+    if (c->query_string) {
+        json_object_set_new(request_info, c->query_string, json_string(r->args));
+    }
+
 
     // encoding category data
-    json_t *objects[] = { encode_headers(r, c), encode_query_string(r, c),
-                 encode_form_fields(r, c), json_deep_copy(c->custom) }; 
+    json_t *categories[] = { encode_headers(r, c), encode_query_string(r, c),
+                 encode_form_fields(r, c), json_deep_copy(c->custom), encode_env_variables(r, c) };
 
-    for (size_t i = 0; i < 4; i++) {
-        json_object_update_new(request_info, objects[i]);
+    for (size_t i = 0; i < sizeof(categories) / sizeof(categories[0]); i++) {
+        json_object_update_new(request_info, categories[i]);
     }
 
     json_t *to_send = json_object();

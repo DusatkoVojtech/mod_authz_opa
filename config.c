@@ -7,7 +7,14 @@
 
 #include "config.h"
 
+#define DEFAULT_OPA_URL "http://localhost:8181/"
 #define DEFAULT_MAX_FORM_SIZE 10000
+#define DEFAULT_HEADERS_ARRAY_NAME "headers"
+#define DEFAULT_QUERY_STRING_ARRAY_NAME "query_string"
+#define DEFAULT_FORM_DATA_ARRAY_NAME "form_data"
+#define DEFAULT_VARIABLES_ARRAY_NAME "vars"
+
+char *DEFAULT_OPA_DECISION[] = { "result", "allow", NULL };
 
 static apr_status_t cleanup_json(void *arg)
 {
@@ -19,9 +26,20 @@ void *create_dir_configuration(apr_pool_t *p, char *dir)
 {
     struct config *c = apr_pcalloc(p, sizeof(struct config));
 
+    c->opa_url = DEFAULT_OPA_URL;
+    c->opa_decision_grant = DEFAULT_OPA_DECISION;
+
     c->headers = apr_hash_make(p);
-    c->query_string = apr_hash_make(p);
+    c->query_parameters = apr_hash_make(p);
     c->form_fields = apr_hash_make(p);
+    c->env_vars = apr_hash_make(p);
+    c->env_prefixes = apr_table_make(p, 4);
+
+    c->headers_array_name = DEFAULT_HEADERS_ARRAY_NAME;
+    c->query_string_array_name = DEFAULT_QUERY_STRING_ARRAY_NAME;
+    c->form_data_array_name = DEFAULT_FORM_DATA_ARRAY_NAME;
+    c->vars_array_name = DEFAULT_VARIABLES_ARRAY_NAME;
+
     c->custom = json_object();
     apr_pool_cleanup_register(p, NULL, cleanup_json, apr_pool_cleanup_null);
 
@@ -41,6 +59,7 @@ void *merge_dir_configuration(apr_pool_t *p, void *base, void *add)
 
     new->opa_url = b->opa_url;
     new->opa_decision_grant = b->opa_decision_grant;
+    new->auth_needed = b->auth_needed;
     new->max_form_size = b->max_form_size;
 
     return new;
@@ -63,6 +82,13 @@ static const char *set_claim_alias(cmd_parms *cmd, void *cfg, const char *key, c
 static const char *set_claim(cmd_parms *cmd, void *cfg, const char *key)
 {
     return set_claim_alias(cmd, cfg, key, NULL);
+}
+
+static const char *set_prefix(cmd_parms *cmd, void *cfg, const char *prefix)
+{
+    struct config *c = cfg;
+    apr_table_set(c->env_prefixes, prefix, prefix);
+    return NULL;
 }
 
 static const char *set_custom(cmd_parms *cmd, void *cfg, const char *key, const char *value)
@@ -122,28 +148,37 @@ const command_rec directives[] = {
               RSRC_CONF | OR_AUTHCFG, "list of headers to be sent"),
     AP_INIT_TAKE12("OpaHeader", set_claim_alias, (void *) APR_OFFSETOF(struct config, headers),
               RSRC_CONF | OR_AUTHCFG, "header and its alias used for key"),    
-    AP_INIT_TAKE1("OpaHeaderArray", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, header_array_name),
+    AP_INIT_TAKE1("OpaHeadersArray", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, headers_array_name),
               RSRC_CONF | OR_AUTHCFG, "name of the sent header array"),
     AP_INIT_FLAG("OpaSendAllHeaders", ap_set_flag_slot, (void *) APR_OFFSETOF(struct config, send_all_headers),
               RSRC_CONF | OR_AUTHCFG, "flag determining whether all received headers should be sent to OPA"),
-    
-    AP_INIT_ITERATE("OpaQueryList", set_claim, (void *) APR_OFFSETOF(struct config, query_string),
-              RSRC_CONF | OR_AUTHCFG, "list of query string fields to be sent"),
-    AP_INIT_TAKE12("OpaQueryString", set_claim_alias, (void *) APR_OFFSETOF(struct config, query_string),
-              RSRC_CONF | OR_AUTHCFG, "name of query field to be sent and optionally its alias"),
+
+    AP_INIT_TAKE1("OpaQueryString", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, query_string),
+              RSRC_CONF | OR_AUTHCFG, "name of the key for the unparsed query string"),
+    AP_INIT_FLAG("OpaQueryParameters", ap_set_flag_slot, (void *) APR_OFFSETOF(struct config, parse_query_string),
+              RSRC_CONF | OR_AUTHCFG, "flag determining whether the module should attempt to parse the query string"),
+    AP_INIT_ITERATE("OpaQueryList", set_claim, (void *) APR_OFFSETOF(struct config, query_parameters),
+              RSRC_CONF | OR_AUTHCFG, "list of query string fields to be sent (all fields are sent if not declared)"),
     AP_INIT_TAKE1("OpaQueryArray", ap_set_string_slot, (void *)APR_OFFSETOF(struct config, query_string_array_name),
-              RSRC_CONF | OR_AUTHCFG, "name of the sent query field array"),
-    AP_INIT_FLAG("OpaSendAllQueries", ap_set_flag_slot, (void *) APR_OFFSETOF(struct config, send_all_queries),
-              RSRC_CONF | OR_AUTHCFG, "flag determining whether all received query fields should be sent to OPA"),
+              RSRC_CONF | OR_AUTHCFG, "name of the array containing the parsed query parameters"),
 
     AP_INIT_ITERATE("OpaFormFieldList", set_claim, (void *) APR_OFFSETOF(struct config, form_fields),
               RSRC_CONF | OR_AUTHCFG, "list of form fields to be sent"),
     AP_INIT_TAKE12("OpaHttpForm", set_claim_alias, (void *) APR_OFFSETOF(struct config, form_fields),
               RSRC_CONF | OR_AUTHCFG, "form field and its alias"),
-    AP_INIT_TAKE1("OpaFormDataArray", ap_set_string_slot,(void *) APR_OFFSETOF(struct config,form_field_array_name),
+    AP_INIT_TAKE1("OpaFormDataArray", ap_set_string_slot,(void *) APR_OFFSETOF(struct config,form_data_array_name),
               RSRC_CONF | OR_AUTHCFG, "name of the array to place form data"),
     AP_INIT_FLAG("OpaSendAllFormData", ap_set_flag_slot,(void *) APR_OFFSETOF(struct config, send_all_form_fields),
               RSRC_CONF | OR_AUTHCFG, "flag determining whether all received form fields should be sent to OPA"),
+
+    AP_INIT_ITERATE("OpaSendVar", set_claim, (void *) APR_OFFSETOF(struct config, env_vars),
+            RSRC_CONF | OR_AUTHCFG, "name of an environment variable to be sent"),
+    AP_INIT_ITERATE("OpaSendVarsWithPrefix", set_prefix, (void *) APR_OFFSETOF(struct config, env_prefixes),
+            RSRC_CONF | OR_AUTHCFG, "prefix of environment variables to be sent to OPA"),
+    AP_INIT_TAKE1("OpaVarsArray", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, vars_array_name),
+            RSRC_CONF | OR_AUTHCFG, "name of the array to place environment variables"),
+    AP_INIT_FLAG("OpaSendAllVars", ap_set_flag_slot,(void *) APR_OFFSETOF(struct config, send_all_vars),
+              RSRC_CONF | OR_AUTHCFG, "flag determining whether all environment variables should be sent to OPA"),
 
     AP_INIT_TAKE1("OpaFormMaxSize", ap_set_int_slot, (void *) APR_OFFSETOF(struct config, max_form_size),
               RSRC_CONF, "maximum size of the sent request"),
@@ -157,10 +192,12 @@ const command_rec directives[] = {
     AP_INIT_TAKE1("OpaRequestHttpVersion", ap_set_string_slot,(void *) APR_OFFSETOF(struct config,version_key_name),
               RSRC_CONF | OR_AUTHCFG, "name of the key for the http version"),
     AP_INIT_TAKE1("OpaRequestURL", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, url_key_name),
-              RSRC_CONF | OR_AUTHCFG, "name of the key for the url"),    
+              RSRC_CONF | OR_AUTHCFG, "name of the key for the url"),
+    AP_INIT_TAKE1("OpaFilePath", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, filepath_key_name),
+              RSRC_CONF | OR_AUTHCFG, "name of the key for the filepath"),
     AP_INIT_TAKE1("OpaRequestMethod", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, method_key_name),
               RSRC_CONF | OR_AUTHCFG, "name of the key for the method"),
-    AP_INIT_TAKE1("OpaRequestAuth", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, auth_key_name),
+    AP_INIT_TAKE1("OpaRemoteUser", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, auth_key_name),
               RSRC_CONF | OR_AUTHCFG, "name of the key for the authenticated user"),
     { NULL }
 };
