@@ -2,6 +2,8 @@
 
 #include <jansson.h>
 
+#define APR_DATA_STRUCT_SIZE 8
+
 static const char *const SSL_VARS[] = {
     "HTTPS",
     "SSL_TLS_SNI",
@@ -47,6 +49,7 @@ struct config
     char *opa_url;
     char **opa_decision_grant;
     int auth_needed;
+    int max_form_size;
 
     char *ip_key_name;
     char *method_key_name;
@@ -60,7 +63,12 @@ struct config
     apr_hash_t *query_parameters;
     apr_hash_t *form_fields;
     apr_hash_t *env_vars;
-    apr_table_t *env_prefixes;
+
+    apr_array_header_t *env_prefixes;
+    apr_array_header_t *json_headers;
+    apr_array_header_t *json_env;
+    apr_array_header_t *env_regex;
+
     json_t *custom;
     
     char *headers_array_name;
@@ -72,7 +80,13 @@ struct config
     int parse_query_string;
     int send_all_form_fields;
     int send_all_vars;
-    int max_form_size;
+
+    // These members exist to help merge two configurations
+    int max_form_set;
+    int headers_flag_set;
+    int query_flag_set;
+    int form_flag_set;
+    int vars_flag_set;
 };
 
 void *create_dir_configuration(apr_pool_t *p, char *dir);

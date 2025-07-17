@@ -7,6 +7,8 @@
 
 #include "config.h"
 
+#define FLAG_UNSET 2
+
 #define DEFAULT_OPA_URL "http://localhost:8181/"
 #define DEFAULT_MAX_FORM_SIZE 10000
 #define DEFAULT_HEADERS_ARRAY_NAME "headers"
@@ -33,7 +35,11 @@ void *create_dir_configuration(apr_pool_t *p, char *dir)
     c->query_parameters = apr_hash_make(p);
     c->form_fields = apr_hash_make(p);
     c->env_vars = apr_hash_make(p);
-    c->env_prefixes = apr_table_make(p, 4);
+
+    c->env_prefixes = apr_array_make(p, APR_DATA_STRUCT_SIZE, sizeof(char *));
+    c->json_env = apr_array_make(p, APR_DATA_STRUCT_SIZE, sizeof(char *));
+    c->json_headers = apr_array_make(p, APR_DATA_STRUCT_SIZE, sizeof(char *));
+    c->env_regex = apr_array_make(p, APR_DATA_STRUCT_SIZE, sizeof(ap_regex_t *));
 
     c->headers_array_name = DEFAULT_HEADERS_ARRAY_NAME;
     c->query_string_array_name = DEFAULT_QUERY_STRING_ARRAY_NAME;
@@ -44,7 +50,7 @@ void *create_dir_configuration(apr_pool_t *p, char *dir)
     apr_pool_cleanup_register(p, NULL, cleanup_json, apr_pool_cleanup_null);
 
     c->max_form_size = DEFAULT_MAX_FORM_SIZE;
-    c->auth_needed = 1;
+    c->auth_needed = 2;
 
     return c;
 }
@@ -57,23 +63,60 @@ void *merge_dir_configuration(apr_pool_t *p, void *base, void *add)
 
     memcpy(new, a, sizeof(struct config));
 
-    new->opa_url = b->opa_url;
-    new->opa_decision_grant = b->opa_decision_grant;
-    new->auth_needed = b->auth_needed;
-    new->max_form_size = b->max_form_size;
+    if (new->opa_url == DEFAULT_OPA_URL) new->opa_url = b->opa_url;
+    if (new->opa_decision_grant == DEFAULT_OPA_DECISION) new->opa_decision_grant = b->opa_decision_grant;
+    if (new->auth_needed == FLAG_UNSET) new->auth_needed = b->auth_needed;
+    if (new->ip_key_name == NULL) new->ip_key_name = b->ip_key_name;
+    if (new->method_key_name == NULL) new->method_key_name = b->method_key_name;
+    if (new->version_key_name == NULL) new->version_key_name = b->version_key_name;
+    if (new->url_key_name == NULL) new->url_key_name = b->url_key_name;
+    if (new->filepath_key_name == NULL) new->filepath_key_name = b->filepath_key_name;
+    if (new->auth_key_name == NULL) new->auth_key_name = b->auth_key_name;
+    if (new->query_string == NULL) new->query_string = b->query_string;
+
+    new->headers = apr_hash_overlay(p, a->headers, b->headers);
+    new->query_parameters = apr_hash_overlay(p, a->query_parameters, b->query_parameters);
+    new->form_fields = apr_hash_overlay(p, a->form_fields, b->form_fields);
+    new->env_vars = apr_hash_overlay(p, a->env_vars, b->env_vars);
+
+    new->env_prefixes = apr_array_append(p, b->env_prefixes, a->env_prefixes);
+    new->json_headers = apr_array_append(p, b->json_headers, a->json_headers);
+    new->json_env = apr_array_append(p, b->json_env, a->json_env);
+    new->env_regex = apr_array_append(p, b->env_regex, a->env_regex);
+
+    if (new->headers_array_name == DEFAULT_HEADERS_ARRAY_NAME) new->headers_array_name = b->headers_array_name;
+    if (new->query_string_array_name == DEFAULT_QUERY_STRING_ARRAY_NAME) {
+        new->query_string_array_name = b->query_string_array_name;
+    }
+    if (new->form_data_array_name == DEFAULT_FORM_DATA_ARRAY_NAME) new->form_data_array_name = b->form_data_array_name;
+    if (new->vars_array_name == DEFAULT_VARIABLES_ARRAY_NAME) new->vars_array_name = b->vars_array_name;
+
+    if (!new->headers_flag_set) new->send_all_headers = b->send_all_headers;
+    if (!new->query_flag_set) new->parse_query_string = b->parse_query_string;
+    if (!new->form_flag_set) new->send_all_form_fields = b->send_all_form_fields;
+    if (!new->vars_flag_set) new->send_all_vars = b->send_all_vars;
+    if (!new->max_form_set) new->max_form_size = b->max_form_size;
+
+    new->custom = json_object();
+    json_object_update_new(new->custom, b->custom);
+    json_object_update_new(new->custom, a->custom);
+    apr_pool_cleanup_register(p, NULL, cleanup_json, apr_pool_cleanup_null);
 
     return new;
 }
 
 static const char *set_claim_alias(cmd_parms *cmd, void *cfg, const char *key, const char *value)
 {
+    long offset = (long) cmd->info;
+    char *c = cfg;
+    apr_hash_t *h = *((apr_hash_t **) (c + offset));
+
+    if (apr_hash_get(h, key, strlen(key)) != NULL && value == NULL) {
+        return NULL;
+    }
     if (value == NULL) {
         value = key;
     }
-
-    long offset = (long) (cmd->info);
-    char *c = cfg;
-    apr_hash_t *h = *((apr_hash_t **) (c + offset));
     apr_hash_set(h, key, strlen(key), value);
 
     return NULL;
@@ -84,11 +127,25 @@ static const char *set_claim(cmd_parms *cmd, void *cfg, const char *key)
     return set_claim_alias(cmd, cfg, key, NULL);
 }
 
-static const char *set_prefix(cmd_parms *cmd, void *cfg, const char *prefix)
+static const char *add_array_element(cmd_parms *cmd, void *cfg, const char *name)
 {
-    struct config *c = cfg;
-    apr_table_set(c->env_prefixes, prefix, prefix);
+    char *c = cfg;
+    long offset = (long) cmd->info;
+    apr_array_header_t *array = *((apr_array_header_t **) (c + offset));
+    const void **new = apr_array_push(array);
+    *new = name;
+
     return NULL;
+}
+
+static const char *add_regex(cmd_parms *cmd, void *cfg, const char *pattern)
+{
+    ap_regex_t *regex = ap_pregcomp(cmd->pool, pattern, AP_REG_EXTENDED);
+    if (regex == NULL) {
+        return apr_psprintf(cmd->pool, "Couldn't compile pattern %s", pattern);
+    }
+
+    return add_array_element(cmd, cfg, (void *) regex);
 }
 
 static const char *set_custom(cmd_parms *cmd, void *cfg, const char *key, const char *value)
@@ -104,7 +161,7 @@ static const char *set_custom_json(cmd_parms *cmd, void *cfg, const char *key, c
     json_error_t error;
     json_t *decoded_value = json_loads(json_value, 0, &error);
     if (decoded_value == NULL) {
-        char *copy = strdup(error.text);
+        char *copy = apr_pstrdup(cmd->pool, error.text);
         return copy;
     }
     json_object_set_new(c->custom, key, decoded_value);
@@ -135,27 +192,67 @@ static const char *set_grant_decision(cmd_parms *cmd, void *cfg, const char *arg
     return NULL;
 }
 
-/* The list of available directives with descriptions of their arguments. The OpaServerURL, OpaDecision and OpaAuthNeeded can only be declared outside containers. Everything else can be present in server config files, containers and even in .htaccess files (if AllowOverride AuthConfig has been set) */
+static const char *set_max_form(cmd_parms *cmd, void *cfg, const char *max)
+{
+    struct config *c = cfg;
+    c->max_form_set = 1;
+    return ap_set_int_slot(cmd, cfg, max);
+}
+
+static const char *set_headers_flag(cmd_parms *cmd, void *cfg, int flag)
+{
+    struct config *c = cfg;
+    c->send_all_headers = flag;
+    c->headers_flag_set = 1;
+    return NULL;
+}
+
+static const char *set_query_flag(cmd_parms *cmd, void *cfg, int flag)
+{
+    struct config *c = cfg;
+    c->parse_query_string = flag;
+    c->query_flag_set = 1;
+    return NULL;
+}
+
+static const char *set_form_flag(cmd_parms *cmd, void *cfg, int flag)
+{
+    struct config *c = cfg;
+    c->send_all_form_fields = flag;
+    c->form_flag_set = 1;
+    return NULL;
+}
+
+static const char *set_vars_flag(cmd_parms *cmd, void *cfg, int flag)
+{
+    struct config *c = cfg;
+    c->send_all_vars = flag;
+    c->vars_flag_set = 1;
+    return NULL;
+}
+
 const command_rec directives[] = {
     AP_INIT_TAKE1("OpaServerURL", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, opa_url),
-              RSRC_CONF, "url representing Opa server"),
+              RSRC_CONF | OR_AUTHCFG, "url representing Opa server"),
     AP_INIT_TAKE1("OpaDecision", set_grant_decision, NULL,
-              RSRC_CONF, "path of keys to a key with boolean value in response (keys are separated by / characters)"),
+              RSRC_CONF | OR_AUTHCFG, "path of keys to a key with boolean value in response (keys are separated by / characters)"),
     AP_INIT_FLAG("OpaAuthNeeded", ap_set_flag_slot, (void *) APR_OFFSETOF(struct config, auth_needed),
-              RSRC_CONF, "flag dictating whether user should be prompted to authenticate (on by default)"),
+              RSRC_CONF | OR_AUTHCFG, "flag dictating whether user should be prompted to authenticate (on by default)"),
 
-    AP_INIT_ITERATE("OpaHeaderList", set_claim, (void *) APR_OFFSETOF(struct config, headers),
+    AP_INIT_ITERATE("OpaHeadersList", set_claim, (void *) APR_OFFSETOF(struct config, headers),
               RSRC_CONF | OR_AUTHCFG, "list of headers to be sent"),
     AP_INIT_TAKE12("OpaHeader", set_claim_alias, (void *) APR_OFFSETOF(struct config, headers),
               RSRC_CONF | OR_AUTHCFG, "header and its alias used for key"),    
     AP_INIT_TAKE1("OpaHeadersArray", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, headers_array_name),
               RSRC_CONF | OR_AUTHCFG, "name of the sent header array"),
-    AP_INIT_FLAG("OpaSendAllHeaders", ap_set_flag_slot, (void *) APR_OFFSETOF(struct config, send_all_headers),
+    AP_INIT_FLAG("OpaSendAllHeaders", set_headers_flag, NULL,
               RSRC_CONF | OR_AUTHCFG, "flag determining whether all received headers should be sent to OPA"),
+    AP_INIT_ITERATE("OpaSendHeaderJSON", add_array_element, (void *) APR_OFFSETOF(struct config, json_headers),
+              RSRC_CONF | OR_AUTHCFG, "name of a header which contains a JSON value"),
 
     AP_INIT_TAKE1("OpaQueryString", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, query_string),
               RSRC_CONF | OR_AUTHCFG, "name of the key for the unparsed query string"),
-    AP_INIT_FLAG("OpaQueryParameters", ap_set_flag_slot, (void *) APR_OFFSETOF(struct config, parse_query_string),
+    AP_INIT_FLAG("OpaQueryParameters", set_query_flag, NULL,
               RSRC_CONF | OR_AUTHCFG, "flag determining whether the module should attempt to parse the query string"),
     AP_INIT_ITERATE("OpaQueryList", set_claim, (void *) APR_OFFSETOF(struct config, query_parameters),
               RSRC_CONF | OR_AUTHCFG, "list of query string fields to be sent (all fields are sent if not declared)"),
@@ -166,21 +263,27 @@ const command_rec directives[] = {
               RSRC_CONF | OR_AUTHCFG, "list of form fields to be sent"),
     AP_INIT_TAKE12("OpaHttpForm", set_claim_alias, (void *) APR_OFFSETOF(struct config, form_fields),
               RSRC_CONF | OR_AUTHCFG, "form field and its alias"),
-    AP_INIT_TAKE1("OpaFormDataArray", ap_set_string_slot,(void *) APR_OFFSETOF(struct config,form_data_array_name),
+    AP_INIT_TAKE1("OpaFormDataArray", ap_set_string_slot, (void *) APR_OFFSETOF(struct config,form_data_array_name),
               RSRC_CONF | OR_AUTHCFG, "name of the array to place form data"),
-    AP_INIT_FLAG("OpaSendAllFormData", ap_set_flag_slot,(void *) APR_OFFSETOF(struct config, send_all_form_fields),
+    AP_INIT_FLAG("OpaSendAllFormData", set_form_flag, NULL,
               RSRC_CONF | OR_AUTHCFG, "flag determining whether all received form fields should be sent to OPA"),
 
-    AP_INIT_ITERATE("OpaSendVar", set_claim, (void *) APR_OFFSETOF(struct config, env_vars),
-            RSRC_CONF | OR_AUTHCFG, "name of an environment variable to be sent"),
-    AP_INIT_ITERATE("OpaSendVarsWithPrefix", set_prefix, (void *) APR_OFFSETOF(struct config, env_prefixes),
+    AP_INIT_ITERATE("OpaSendVarsList", set_claim, (void *) APR_OFFSETOF(struct config, env_vars),
+            RSRC_CONF | OR_AUTHCFG, "list of environment variables to be sent"),
+    AP_INIT_TAKE12("OpaSendVar", set_claim_alias, (void *) APR_OFFSETOF(struct config, env_vars),
+            RSRC_CONF | OR_AUTHCFG, "name of an environment variable to be sent and its optional alias"),
+    AP_INIT_ITERATE("OpaSendVarsWithPrefix", add_array_element, (void *) APR_OFFSETOF(struct config, env_prefixes),
             RSRC_CONF | OR_AUTHCFG, "prefix of environment variables to be sent to OPA"),
+    AP_INIT_ITERATE("OpaSendVarsMatching", add_regex, (void *) APR_OFFSETOF(struct config, env_regex),
+            RSRC_CONF | OR_AUTHCFG, "string matching variables which should be sent ot OPA"),
     AP_INIT_TAKE1("OpaVarsArray", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, vars_array_name),
             RSRC_CONF | OR_AUTHCFG, "name of the array to place environment variables"),
-    AP_INIT_FLAG("OpaSendAllVars", ap_set_flag_slot,(void *) APR_OFFSETOF(struct config, send_all_vars),
+    AP_INIT_FLAG("OpaSendAllVars", set_vars_flag, NULL,
               RSRC_CONF | OR_AUTHCFG, "flag determining whether all environment variables should be sent to OPA"),
+    AP_INIT_ITERATE("OpaSendVarJSON", add_array_element, (void *) APR_OFFSETOF(struct config, json_env),
+              RSRC_CONF | OR_AUTHCFG, "name of a variable which contains a JSON value"),
 
-    AP_INIT_TAKE1("OpaFormMaxSize", ap_set_int_slot, (void *) APR_OFFSETOF(struct config, max_form_size),
+    AP_INIT_TAKE1("OpaFormMaxSize", set_max_form, (void *) APR_OFFSETOF(struct config, max_form_size),
               RSRC_CONF, "maximum size of the sent request"),
     AP_INIT_TAKE2("OpaCustom", set_custom, (void *) NULL,
               RSRC_CONF | OR_AUTHCFG, "key and a string value for a custom claim"),
