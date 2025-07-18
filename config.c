@@ -91,15 +91,30 @@ void *merge_dir_configuration(apr_pool_t *p, void *base, void *add)
     if (new->form_data_array_name == DEFAULT_FORM_DATA_ARRAY_NAME) new->form_data_array_name = b->form_data_array_name;
     if (new->vars_array_name == DEFAULT_VARIABLES_ARRAY_NAME) new->vars_array_name = b->vars_array_name;
 
-    if (!new->headers_flag_set) new->send_all_headers = b->send_all_headers;
-    if (!new->query_flag_set) new->parse_query_string = b->parse_query_string;
-    if (!new->form_flag_set) new->send_all_form_fields = b->send_all_form_fields;
-    if (!new->vars_flag_set) new->send_all_vars = b->send_all_vars;
-    if (!new->max_form_set) new->max_form_size = b->max_form_size;
+    if (!new->headers_flag_set) {
+        new->send_all_headers = b->send_all_headers;
+        new->headers_flag_set = b->headers_flag_set;
+    }
+    if (!new->query_flag_set) {
+        new->parse_query_string = b->parse_query_string;
+        new->query_flag_set = b->query_flag_set;
+    }
+    if (!new->form_flag_set) {
+        new->send_all_form_fields = b->send_all_form_fields;
+        new->form_flag_set = b->form_flag_set;
+    }
+    if (!new->vars_flag_set) {
+        new->send_all_vars = b->send_all_vars;
+        new->vars_flag_set = b->vars_flag_set;
+    }
+    if (!new->max_form_set) {
+        new->max_form_size = b->max_form_size;
+        new->max_form_set = b->max_form_set;
+    }
 
     new->custom = json_object();
-    json_object_update_new(new->custom, b->custom);
-    json_object_update_new(new->custom, a->custom);
+    json_object_update(new->custom, b->custom);
+    json_object_update(new->custom, a->custom);
     apr_pool_cleanup_register(p, NULL, cleanup_json, apr_pool_cleanup_null);
 
     return new;
@@ -284,10 +299,10 @@ const command_rec directives[] = {
               RSRC_CONF | OR_AUTHCFG, "name of a variable which contains a JSON value"),
 
     AP_INIT_TAKE1("OpaFormMaxSize", set_max_form, (void *) APR_OFFSETOF(struct config, max_form_size),
-              RSRC_CONF, "maximum size of the sent request"),
+              RSRC_CONF | OR_AUTHCFG, "maximum size of the sent request"),
     AP_INIT_TAKE2("OpaCustom", set_custom, (void *) NULL,
               RSRC_CONF | OR_AUTHCFG, "key and a string value for a custom claim"),
-    AP_INIT_TAKE2("OpaCustomJson", set_custom_json, (void *) NULL,
+    AP_INIT_TAKE2("OpaCustomJSON", set_custom_json, (void *) NULL,
               RSRC_CONF | OR_AUTHCFG, "key and a json object or array as value for a custom claim"),
 
     AP_INIT_TAKE1("OpaRequestIP", ap_set_string_slot, (void *) APR_OFFSETOF(struct config, ip_key_name),

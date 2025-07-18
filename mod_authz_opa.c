@@ -452,7 +452,7 @@ static char *build_json(request_rec *r, const struct config *c)
     if (c->auth_key_name) {
         json_object_set_new(request_info, c->auth_key_name, json_string(r->user));
     }
-    if (c->query_string) {
+    if (c->query_string != NULL && r->args != NULL) {
         char *q_string = percent_encoding(r->pool, r->args);
         json_object_set_new(request_info, c->query_string, json_string(q_string));
     }

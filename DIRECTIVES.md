@@ -82,7 +82,7 @@ These directives decide which of the environment variables should be sent to OPA
 
 **OpaSendVarsMatching** regex1 regex2 regex3 ... - sends all variables which match one of the listed regular expressions (the expressions are POSIX extended regular expression)
 
-**OpaSendVarsArray** array - specifies the name of the array under which the variables should be sent (default: vars)
+**OpaVarsArray** array - specifies the name of the array under which the variables should be sent (default: vars)
 
 **OpaSendVarJSON** var1 var2 var3 ... - specifies that the values of these variables are JSON objects or arrays and should be sent to OPA directly
 
@@ -92,4 +92,4 @@ These directives can be used to add additional custom claims, that will always b
 
 **OpaCustom** key value - makes the module send field "key" with value "value" to OPA regardless of HTTP request contents
 
-**OpaCustomJson** key value - same as OpaCustom, but the value will be interpreted as JSON and needs to be a valid JSON object or array
+**OpaCustomJSON** key value - same as OpaCustom, but the value will be interpreted as JSON and needs to be a valid JSON object or array
