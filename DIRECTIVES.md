@@ -4,7 +4,7 @@ OPA authorization can be activated for a given location using the directive **Re
 
 ## Scope
 
-All configuration directives can be placed anywhere in the config file or directive containers (including Directory, Location, VirtualHost). The effect of the directive is inherited to the subdirectories and possibly merged with new declarations. The directives can also be placed in .htaccess files if the directive for the directory of the .htaccess file is configured with AllowOverride AuthConfig.
+All configuration directives can be placed anywhere in the config file or directive containers (including Directory, Location, VirtualHost). The effect of the directive is inherited to the subdirectories and possibly merged with new declarations. The directives can also be placed in .htaccess files if the directory of the .htaccess file is configured with AllowOverride AuthConfig.
 
 ## General
 
