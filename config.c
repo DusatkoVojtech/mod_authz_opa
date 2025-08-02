@@ -9,12 +9,12 @@
 
 #define FLAG_UNSET 2
 
-#define DEFAULT_OPA_URL "http://localhost:8181/"
-#define DEFAULT_MAX_FORM_SIZE 10000
-#define DEFAULT_HEADERS_ARRAY_NAME "headers"
-#define DEFAULT_QUERY_STRING_ARRAY_NAME "query_string"
-#define DEFAULT_FORM_DATA_ARRAY_NAME "form_data"
-#define DEFAULT_VARIABLES_ARRAY_NAME "vars"
+const char *DEFAULT_OPA_URL = "http://localhost:8181/";
+const int DEFAULT_MAX_FORM_SIZE = 10000;
+const char *DEFAULT_HEADERS_ARRAY_NAME = "headers";
+const char *DEFAULT_QUERY_STRING_ARRAY_NAME = "query_string";
+const char *DEFAULT_FORM_DATA_ARRAY_NAME = "form_data";
+const char *DEFAULT_VARIABLES_ARRAY_NAME = "vars";
 
 char *DEFAULT_OPA_DECISION[] = { "result", "allow", NULL };
 

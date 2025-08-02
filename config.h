@@ -46,7 +46,7 @@ static const char *const SSL_VARS[] = {
 
 struct config
 {
-    char *opa_url;
+    const char *opa_url;
     char **opa_decision_grant;
     int auth_needed;
     int max_form_size;
@@ -71,10 +71,10 @@ struct config
 
     json_t *custom;
     
-    char *headers_array_name;
-    char *query_string_array_name;
-    char *form_data_array_name;
-    char *vars_array_name;
+    const char *headers_array_name;
+    const char *query_string_array_name;
+    const char *form_data_array_name;
+    const char *vars_array_name;
 
     int send_all_headers;
     int parse_query_string;

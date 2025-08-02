@@ -108,7 +108,7 @@ static char *perform_opa_request(request_rec *r, const struct config *c, char *j
 }
 
 static json_t *encode_claims(const apr_array_header_t *extracted_claims, apr_hash_t *configured_claims,
-              int send_all, char *array_name)
+              int send_all, const char *array_name)
 {
     json_t *fields = json_object();
     if (fields == NULL) {
