@@ -305,10 +305,10 @@ static json_t *encode_form_fields(request_rec *r, const struct config *cfg)
     char *value;
     for (int i = 0; i < form_data->nelts; i++) {
         apr_brigade_length(form_pairs[i].value, 1, &brigade_len);
-        value_len = brigade_len;
+        value_len = (apr_size_t) brigade_len;
         value = apr_palloc(r->pool, value_len + 1);
         apr_brigade_flatten(form_pairs[i].value, value, &value_len);
-        value[brigade_len] != '\0';
+        value[brigade_len] = '\0';
         apr_table_setn(new_table, form_pairs[i].name, value);
     }
 
