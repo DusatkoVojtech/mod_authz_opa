@@ -84,7 +84,7 @@ These directives decide which of the environment variables should be sent to OPA
 
 **OpaVarsArray** array - specifies the name of the array under which the variables should be sent (default: vars)
 
-**OpaSendVarJSON** var1 var2 var3 ... - specifies that the values of these variables are JSON objects or arrays and should be sent to OPA directly
+**OpaSendVarJSON** var1 var2 var3 ... - specifies that the contents of these variables should be interpreted as JSON values and sent to OPA directly
 
 ## Custom
 

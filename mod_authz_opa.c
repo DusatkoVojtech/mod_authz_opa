@@ -168,7 +168,7 @@ static json_t *encode_json_variables(request_rec *r, apr_array_header_t *already
         const char *val = apr_table_get(received, var[i]);
         if (val != NULL) {
             json_error_t error;
-            json_t *json_val = json_loads(val, 0, &error);
+            json_t *json_val = json_loads(val, JSON_DECODE_ANY, &error);
             apr_table_unset(received, var[i]);
             if (json_val == NULL) {
                 char *error_text = apr_pstrdup(r->pool, error.text);
