@@ -7,6 +7,7 @@
 #include "http_ssl.h"
 #include "apr_strings.h"
 #include "apr_lib.h"
+#include "apr_escape.h"
 
 #include <curl/curl.h>
 #include <jansson.h>
@@ -212,37 +213,14 @@ static json_t *encode_headers(request_rec *r, const struct config *cfg)
     return result;
 }
 
-static int hex_to_num(char digit)
+static char *query_unescaped(request_rec *r)
 {
-    if (digit >= 'A') {
-        return 10 + ((digit & 0xdf) - 'A');
+    const char *decoded = apr_punescape_url(r->pool, r->args, NULL, NULL, 1);
+    if (decoded == NULL) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Failed to percent decode the query");
     }
-    return digit - '0';
-}
 
-static char *percent_encoding(apr_pool_t *p, char *value)
-{
-    char *val = apr_pstrdup(p, value);
-    int j = 0;
-    for (int i = 0; value[i] != '\0'; i++, j++) {
-        if (value[i] == '%') {
-            if (value[i + 1] == '\0' || value[i + 2] == '\0' ||
-                    !apr_isxdigit(value[i + 1]) || !apr_isxdigit(value[i + 2])) {
-                return NULL;
-            }
-            val[j] = 16 * hex_to_num(value[i + 1]);
-            val[j] += hex_to_num(value[i + 2]);
-            if (val[j] == '\0') {
-                return NULL;
-            }
-
-            i += 2;
-        } else {
-            val[j] = val[i];
-        }
-    }
-    val[j] = '\0';
-    return val;
+    return apr_pstrdup(r->pool, decoded);
 }
 
 static json_t *encode_query_string(request_rec *r, const struct config *cfg)
@@ -250,18 +228,20 @@ static json_t *encode_query_string(request_rec *r, const struct config *cfg)
     if (!cfg->parse_query_string || r->args == NULL) {
         return NULL;
     }
-    char *query_string = apr_pstrdup(r->pool, r->args);
+    char *query_string = query_unescaped(r);
+    if (query_string == NULL) {
+        return NULL;
+    }
+
     char *next;
     apr_table_t *query_args = apr_table_make(r->pool, APR_DATA_STRUCT_SIZE);
 
     for (char *param = apr_strtok(query_string, "&", &next); param != NULL; param = apr_strtok(NULL, "&", &next)) {
         char *value = param;
         for (int i = 0; param[i] != '\0'; i++) {
-            if (apr_isspace(param[i]) || !apr_isascii(param[i])) {
-                return NULL;
-            }
             if (param[i] == '=') {
                 if (value != param) {
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Double assignment for query parameter '%s'", param);
                     return NULL;
                 }
                 param[i] = '\0';
@@ -272,11 +252,10 @@ static json_t *encode_query_string(request_rec *r, const struct config *cfg)
             }
         }
         if (value == param) {
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "No value for query parameter '%s'", param);
             return NULL;
         }
 
-        param = percent_encoding(r->pool, param);
-        value = percent_encoding(r->pool, value);
         apr_table_add(query_args, param, value);
     }
 
@@ -453,8 +432,10 @@ static char *build_json(request_rec *r, const struct config *c)
         json_object_set_new(request_info, c->auth_key_name, json_string(r->user));
     }
     if (c->query_string != NULL && r->args != NULL) {
-        char *q_string = percent_encoding(r->pool, r->args);
-        json_object_set_new(request_info, c->query_string, json_string(q_string));
+        const char *q_string = query_unescaped(r);
+        if (q_string != NULL) {
+            json_object_set_new(request_info, c->query_string, json_string(q_string));
+        }
     }
 
     ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "Added basic request information to JSON");
