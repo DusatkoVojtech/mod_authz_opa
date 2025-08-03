@@ -34,8 +34,8 @@ struct http_response
 {
     apr_pool_t *req_pool;
     char *bytes;
-    int count;
-    int allocated;
+    size_t count;
+    size_t allocated;
 };
 
 /* This function will be called after a thread exits. */
@@ -106,6 +106,14 @@ static char *perform_opa_request(request_rec *r, const struct config *c, char *j
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "OPA request sent to %s", c->opa_url);
 
     return response.bytes;
+}
+
+static char *get_json_string(apr_pool_t *p, json_t *json)
+{
+    char *dumped = json_dumps(json, JSON_COMPACT);
+    char *result = apr_pstrdup(p, dumped);
+    free(dumped);
+    return result;
 }
 
 static json_t *encode_claims(const apr_array_header_t *extracted_claims, apr_hash_t *configured_claims,
@@ -208,7 +216,8 @@ static json_t *encode_headers(request_rec *r, const struct config *cfg)
     }
 
     if (result != NULL) {
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "Finished encoding the headers into JSON");
+        char *headers = get_json_string(r->pool, result);
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "Added the following HTTP headers to JSON: \"%s\"", headers);
     }
     return result;
 }
@@ -294,7 +303,8 @@ static json_t *encode_form_fields(request_rec *r, const struct config *cfg)
     json_t *result = encode_claims(apr_table_elts(new_table), cfg->form_fields,
                  cfg->send_all_form_fields, cfg->form_data_array_name);
     if (result != NULL) {
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "Finished setting up form data fields");
+        char *fields = get_json_string(r->pool, result);
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "Added the following form fields to JSON: \"%s\"", fields);
     }
 
     return result;
@@ -365,7 +375,7 @@ static json_t *encode_env_variables(request_rec *r, const struct config *cfg)
 
     for (int i = 0; i < cfg->env_prefixes->nelts; i++) {
         for (int j = 0; j < variables->nelts; j++) {
-            int prefix_length = strlen(prefixes[i]);
+            size_t prefix_length = strlen(prefixes[i]);
             if (prefix_length <= strlen(var[j].key) &&
                     strncmp(var[j].key, prefixes[i], prefix_length) == 0) {
                 json_object_set_new(prefix_variables, var[j].key, json_string(var[j].val));
@@ -399,7 +409,8 @@ static json_t *encode_env_variables(request_rec *r, const struct config *cfg)
     }
 
     if (result != NULL) {
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "Finished setting up environment variables");
+        char *variables = get_json_string(r->pool, result);
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "Added these environment vars to JSON: \"%s\"", variables);
     }
 
     return result;
@@ -459,10 +470,11 @@ static char *build_json(request_rec *r, const struct config *c)
 
     /* The JSON object sent to opa needs to be enclosed inside an "input" key. */
     json_object_set_new(to_send, "input", request_info);
-    char *json = json_dumps(to_send, JSON_COMPACT);
+
+    char *result = get_json_string(r->pool, to_send);
     json_decref(to_send);
 
-    return json;
+    return result;
 }
 
 static authz_status check_opa_decision(request_rec *r, char *decision_string, char **grant_path)
@@ -498,7 +510,7 @@ static authz_status opa_check_authorization(request_rec *r, const char *require_
 {
     const struct config *c = ap_get_module_config(r->per_dir_config, &authz_opa_module);
 
-    // asking for authentication if needed
+    // asking the client for authentication if needed
     if (c->auth_needed && r->user == NULL) {
         return AUTHZ_DENIED_NO_USER;
     }
@@ -510,11 +522,11 @@ static authz_status opa_check_authorization(request_rec *r, const char *require_
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Failed to encode request into JSON");
         return AUTHZ_DENIED;
     }
+    ap_log_rerror(APLOG_MARK, APLOG_TRACE8, 0, r, "The following JSON will be sent to OPA: \"%s\"", json);
 
     char *decision = perform_opa_request(r, c, json);
-    free(json);
     if (decision == NULL) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "OPA request failed");
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "Failed to send JSON to OPA at %s; ending request", c->opa_url);
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
